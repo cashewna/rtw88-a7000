@@ -10,6 +10,7 @@
 #include "coex.h"
 #include "ps.h"
 #include "reg.h"
+#include "phy.h"
 #include "bf.h"
 #include "debug.h"
 #include "wow.h"
@@ -84,6 +85,7 @@ static int rtw_ops_config(struct ieee80211_hw *hw, u32 changed)
 #endif
 {
 	struct rtw_dev *rtwdev = hw->priv;
+	bool mon_chan_mismatch = false;
 	int ret = 0;
 
 	/* let previous ips work finish to ensure we don't leave ips twice */
@@ -93,8 +95,9 @@ static int rtw_ops_config(struct ieee80211_hw *hw, u32 changed)
 
 	rtw_leave_lps_deep(rtwdev);
 
-	if ((changed & IEEE80211_CONF_CHANGE_IDLE) &&
-	    !(hw->conf.flags & IEEE80211_CONF_IDLE)) {
+	if (!(hw->conf.flags & IEEE80211_CONF_IDLE) &&
+	    ((changed & IEEE80211_CONF_CHANGE_IDLE) ||
+	     !test_bit(RTW_FLAG_POWERON, rtwdev->flags))) {
 		ret = rtw_leave_ips(rtwdev);
 		if (ret) {
 			rtw_err(rtwdev, "failed to leave idle state\n");
@@ -102,23 +105,50 @@ static int rtw_ops_config(struct ieee80211_hw *hw, u32 changed)
 		}
 	}
 
+	if ((hw->conf.flags & IEEE80211_CONF_MONITOR) &&
+	    hw->conf.chandef.chan &&
+	    rtwdev->hal.primary_channel != hw->conf.chandef.chan->hw_value)
+		mon_chan_mismatch = true;
+
 	if (changed & IEEE80211_CONF_CHANGE_MONITOR) {
 		if (hw->conf.flags & IEEE80211_CONF_MONITOR) {
 			rtwdev->hal.rcr |= BIT_AAP;
 			rtwdev->hal.rcr &= ~(BIT_CBSSID_BCN | BIT_CBSSID_DATA);
-			rtw_write32(rtwdev, REG_RCR, rtwdev->hal.rcr);
-			rtw_write16(rtwdev, REG_RXFLTMAP1, 0xffff);
+			set_bit(RTW_FLAG_DIG_DISABLE, rtwdev->flags);
+			if (test_bit(RTW_FLAG_POWERON, rtwdev->flags)) {
+				rtw_write32(rtwdev, REG_RCR, rtwdev->hal.rcr);
+				rtw_write16(rtwdev, REG_RXFLTMAP1, 0xffff);
+				rtw_phy_dig_set_max_coverage(rtwdev);
+				if (rtwdev->chip->ops->cck_pd_set)
+					rtwdev->chip->ops->cck_pd_set(rtwdev,
+								      CCK_PD_LV0);
+			}
 		} else {
 			rtwdev->hal.rcr &= ~BIT_AAP;
-			rtw_write32(rtwdev, REG_RCR, rtwdev->hal.rcr);
-			rtw_write16(rtwdev, REG_RXFLTMAP1, rtwdev->hal.rxfltmap1);
+			if (!test_bit(RTW_FLAG_SCANNING, rtwdev->flags)) {
+				clear_bit(RTW_FLAG_DIG_DISABLE, rtwdev->flags);
+				if (test_bit(RTW_FLAG_POWERON, rtwdev->flags))
+					rtw_phy_dig_reset(rtwdev);
+			}
+			if (test_bit(RTW_FLAG_POWERON, rtwdev->flags)) {
+				rtw_write32(rtwdev, REG_RCR, rtwdev->hal.rcr);
+				rtw_write16(rtwdev, REG_RXFLTMAP1,
+					    rtwdev->hal.rxfltmap1);
+			}
 		}
 	}
 
-	if ((changed & IEEE80211_CONF_CHANGE_CHANNEL) ||
-	    ((changed & (IEEE80211_CONF_CHANGE_MONITOR | IEEE80211_CONF_CHANGE_IDLE)) &&
-	     (hw->conf.flags & IEEE80211_CONF_MONITOR)))
+	if (test_bit(RTW_FLAG_POWERON, rtwdev->flags) &&
+	    ((changed & IEEE80211_CONF_CHANGE_CHANNEL) || mon_chan_mismatch ||
+	     ((changed & (IEEE80211_CONF_CHANGE_MONITOR | IEEE80211_CONF_CHANGE_IDLE)) &&
+	      (hw->conf.flags & IEEE80211_CONF_MONITOR)))) {
 		rtw_set_channel(rtwdev);
+		if (hw->conf.flags & IEEE80211_CONF_MONITOR) {
+			rtw_phy_dig_set_max_coverage(rtwdev);
+			rtw_write32(rtwdev, REG_RCR, rtwdev->hal.rcr);
+			rtw_write16(rtwdev, REG_RXFLTMAP1, 0xffff);
+		}
+	}
 
 	if ((changed & IEEE80211_CONF_CHANGE_IDLE) &&
 	    (hw->conf.flags & IEEE80211_CONF_IDLE) &&
@@ -321,10 +351,13 @@ static void rtw_ops_configure_filter(struct ieee80211_hw *hw,
 	rtw_leave_lps_deep(rtwdev);
 
 	if (changed_flags & FIF_CONTROL) {
-		if (*new_flags & FIF_CONTROL)
-			rtw_write16(rtwdev, REG_RXFLTMAP1, 0xffff);
-		else
-			rtw_write16(rtwdev, REG_RXFLTMAP1, rtwdev->hal.rxfltmap1);
+		if (test_bit(RTW_FLAG_POWERON, rtwdev->flags)) {
+			if (*new_flags & FIF_CONTROL)
+				rtw_write16(rtwdev, REG_RXFLTMAP1, 0xffff);
+			else
+				rtw_write16(rtwdev, REG_RXFLTMAP1,
+					    rtwdev->hal.rxfltmap1);
+		}
 	}
 	if (changed_flags & FIF_ALLMULTI) {
 		if (*new_flags & FIF_ALLMULTI)
@@ -351,11 +384,19 @@ static void rtw_ops_configure_filter(struct ieee80211_hw *hw,
 			rtwdev->hal.rcr |= BIT_CBSSID_BCN;
 	}
 
+	if (hw->conf.flags & IEEE80211_CONF_MONITOR) {
+		rtwdev->hal.rcr |= BIT_AAP;
+		rtwdev->hal.rcr &= ~(BIT_CBSSID_BCN | BIT_CBSSID_DATA);
+		if (test_bit(RTW_FLAG_POWERON, rtwdev->flags))
+			rtw_write16(rtwdev, REG_RXFLTMAP1, 0xffff);
+	}
+
 	rtw_dbg(rtwdev, RTW_DBG_RX,
 		"config rx filter, changed=0x%08x, new=0x%08x, rcr=0x%08x\n",
 		changed_flags, *new_flags, rtwdev->hal.rcr);
 
-	rtw_write32(rtwdev, REG_RCR, rtwdev->hal.rcr);
+	if (test_bit(RTW_FLAG_POWERON, rtwdev->flags))
+		rtw_write32(rtwdev, REG_RCR, rtwdev->hal.rcr);
 
 	mutex_unlock(&rtwdev->mutex);
 }

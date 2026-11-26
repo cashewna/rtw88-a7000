@@ -689,6 +689,8 @@ static void rtw8814a_switch_channel(struct rtw_dev *rtwdev, u8 channel)
 	default:
 		if (channel >= 149)
 			rtw_write32_mask(rtwdev, REG_AGC_TABLE, 0x1f, 3);
+		else
+			rtw_write32_mask(rtwdev, REG_AGC_TABLE, 0x1f, 0);
 
 		break;
 	}
@@ -1111,6 +1113,7 @@ static void rtw8814a_set_bw_mode(struct rtw_dev *rtwdev, u8 new_band,
 
 	if (bw == RTW_CHANNEL_WIDTH_80) {
 		rtw_write32_mask(rtwdev, REG_ADCCLK, 0x3c, txsc);
+		rtw_write32_clr(rtwdev, REG_RXSB, BIT(4));
 	} else if (bw == RTW_CHANNEL_WIDTH_40) {
 		rtw_write32_mask(rtwdev, REG_ADCCLK, 0x3c, txsc);
 
@@ -1118,6 +1121,9 @@ static void rtw8814a_set_bw_mode(struct rtw_dev *rtwdev, u8 new_band,
 			rtw_write32_set(rtwdev, REG_RXSB, BIT(4));
 		else
 			rtw_write32_clr(rtwdev, REG_RXSB, BIT(4));
+	} else {
+		rtw_write32_mask(rtwdev, REG_ADCCLK, 0x3c, 0);
+		rtw_write32_clr(rtwdev, REG_RXSB, BIT(4));
 	}
 
 	rtw8814a_set_bw_rf(rtwdev, bw);
@@ -1130,6 +1136,8 @@ static void rtw8814a_set_bw_mode(struct rtw_dev *rtwdev, u8 new_band,
 static void rtw8814a_set_channel(struct rtw_dev *rtwdev, u8 channel, u8 bw,
 				 u8 primary_chan_idx)
 {
+	bool monitor = !!(rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR) ||
+		       !!rtwdev->mon_chan;
 	u8 old_band, new_band;
 
 	if (rtw_read8(rtwdev, REG_CCK_CHECK) & BIT_CHECK_CCK_EN)
@@ -1142,7 +1150,7 @@ static void rtw8814a_set_channel(struct rtw_dev *rtwdev, u8 channel, u8 bw,
 	else
 		new_band = RTW_BAND_2G;
 
-	if (new_band != old_band)
+	if (new_band != old_band || monitor)
 		rtw8814a_switch_band(rtwdev, new_band, bw);
 
 	rtw8814a_switch_channel(rtwdev, channel);
@@ -1150,6 +1158,27 @@ static void rtw8814a_set_channel(struct rtw_dev *rtwdev, u8 channel, u8 bw,
 	rtw8814a_24g_cck_tx_dfir(rtwdev, channel);
 
 	rtw8814a_set_bw_mode(rtwdev, new_band, channel, bw, primary_chan_idx);
+
+	if (monitor) {
+		struct ieee80211_channel *conf_ch = rtwdev->hw->conf.chandef.chan;
+
+		rtw_info(rtwdev,
+			 "mon tune: req=%u hal_ch=%u prim=%u bw=%u | cck_chk=0x%02x rcr=0x%08x adcclk=0x%08x agc=0x%02x rfe=%08x/%08x/%08x/%08x invD=0x%02x rf18=0x%05x igi=0x%02x\n",
+			 conf_ch ? conf_ch->hw_value : 0,
+			 rtwdev->hal.current_channel,
+			 rtwdev->hal.primary_channel, bw,
+			 rtw_read8(rtwdev, REG_CCK_CHECK),
+			 rtw_read32(rtwdev, REG_RCR),
+			 rtw_read32(rtwdev, REG_ADCCLK),
+			 rtw_read32_mask(rtwdev, REG_AGC_TABLE, 0x1f),
+			 rtw_read32(rtwdev, REG_RFE_PINMUX_A),
+			 rtw_read32(rtwdev, REG_RFE_PINMUX_B),
+			 rtw_read32(rtwdev, REG_RFE_PINMUX_C),
+			 rtw_read32(rtwdev, REG_RFE_PINMUX_D),
+			 rtw_read32_mask(rtwdev, REG_RFE_INVSEL_D, BIT_RFE_SELSW0_D),
+			 rtw_read_rf(rtwdev, RF_PATH_A, RF_CFGCH, RFREG_MASK),
+			 rtw_read32_mask(rtwdev, 0x0c50, 0x7f));
+	}
 }
 
 static s8 rtw8814a_cck_rx_pwr(u8 lna_idx, u8 vga_idx)

@@ -795,6 +795,9 @@ static void rtw_phy_cck_pd(struct rtw_dev *rtwdev)
 	if (rtwdev->hal.current_band_type != RTW_BAND_2G)
 		return;
 
+	if (test_bit(RTW_FLAG_DIG_DISABLE, rtwdev->flags))
+		return;
+
 	if (dm_info->cck_fa_avg == CCK_FA_AVG_RESET)
 		dm_info->cck_fa_avg = cck_fa;
 	else

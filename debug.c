@@ -1219,7 +1219,11 @@ static ssize_t rtw_debugfs_set_monitor_channel(struct file *filp,
 	mutex_lock(&rtwdev->mutex);
 	rtwdev->mon_chan = channel;
 	rtw_leave_lps_deep(rtwdev);
-	rtw_set_channel(rtwdev);
+	if (test_bit(RTW_FLAG_POWERON, rtwdev->flags)) {
+		rtw_set_channel(rtwdev);
+		if (channel)
+			rtw_phy_dig_set_max_coverage(rtwdev);
+	}
 	mutex_unlock(&rtwdev->mutex);
 
 	rtw_dbg(rtwdev, RTW_DBG_DEBUGFS,

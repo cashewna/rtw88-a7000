@@ -889,6 +889,9 @@ void rtw_set_channel(struct rtw_dev *rtwdev)
 	struct rtw_channel_params ch_param;
 	u8 center_chan, primary_chan, bandwidth, band;
 
+	if (!test_bit(RTW_FLAG_POWERON, rtwdev->flags))
+		return;
+
 	/* When a monitor channel is forced via debugfs, ignore whatever
 	 * channel mac80211 asks for (e.g. the channel 1 it programs when an
 	 * unassociated station vif is brought up on kernels >= 6.9) and pin
