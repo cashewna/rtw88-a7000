@@ -1136,8 +1136,7 @@ static void rtw8814a_set_bw_mode(struct rtw_dev *rtwdev, u8 new_band,
 static void rtw8814a_set_channel(struct rtw_dev *rtwdev, u8 channel, u8 bw,
 				 u8 primary_chan_idx)
 {
-	bool monitor = !!(rtwdev->hw->conf.flags & IEEE80211_CONF_MONITOR) ||
-		       !!rtwdev->mon_chan;
+	bool monitor = rtw_in_monitor_mode(rtwdev);
 	u8 old_band, new_band;
 
 	if (rtw_read8(rtwdev, REG_CCK_CHECK) & BIT_CHECK_CCK_EN)

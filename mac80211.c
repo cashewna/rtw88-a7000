@@ -85,6 +85,7 @@ static int rtw_ops_config(struct ieee80211_hw *hw, u32 changed)
 #endif
 {
 	struct rtw_dev *rtwdev = hw->priv;
+	bool in_monitor = rtw_in_monitor_mode(rtwdev);
 	bool mon_chan_mismatch = false;
 	int ret = 0;
 
@@ -105,8 +106,7 @@ static int rtw_ops_config(struct ieee80211_hw *hw, u32 changed)
 		}
 	}
 
-	if ((hw->conf.flags & IEEE80211_CONF_MONITOR) &&
-	    hw->conf.chandef.chan &&
+	if (in_monitor && hw->conf.chandef.chan &&
 	    rtwdev->hal.primary_channel != hw->conf.chandef.chan->hw_value)
 		mon_chan_mismatch = true;
 
@@ -119,9 +119,12 @@ static int rtw_ops_config(struct ieee80211_hw *hw, u32 changed)
 				rtw_write32(rtwdev, REG_RCR, rtwdev->hal.rcr);
 				rtw_write16(rtwdev, REG_RXFLTMAP1, 0xffff);
 				rtw_phy_dig_set_max_coverage(rtwdev);
-				if (rtwdev->chip->ops->cck_pd_set)
+				if (rtwdev->chip->ops->cck_pd_set) {
+					rtwdev->dm_info.cck_pd_lv[RTW_CHANNEL_WIDTH_20][RF_PATH_A] =
+						CCK_PD_LV_MAX;
 					rtwdev->chip->ops->cck_pd_set(rtwdev,
 								      CCK_PD_LV0);
+				}
 			}
 		} else {
 			rtwdev->hal.rcr &= ~BIT_AAP;
@@ -141,9 +144,9 @@ static int rtw_ops_config(struct ieee80211_hw *hw, u32 changed)
 	if (test_bit(RTW_FLAG_POWERON, rtwdev->flags) &&
 	    ((changed & IEEE80211_CONF_CHANGE_CHANNEL) || mon_chan_mismatch ||
 	     ((changed & (IEEE80211_CONF_CHANGE_MONITOR | IEEE80211_CONF_CHANGE_IDLE)) &&
-	      (hw->conf.flags & IEEE80211_CONF_MONITOR)))) {
+	      in_monitor))) {
 		rtw_set_channel(rtwdev);
-		if (hw->conf.flags & IEEE80211_CONF_MONITOR) {
+		if (in_monitor) {
 			rtw_phy_dig_set_max_coverage(rtwdev);
 			rtw_write32(rtwdev, REG_RCR, rtwdev->hal.rcr);
 			rtw_write16(rtwdev, REG_RXFLTMAP1, 0xffff);
@@ -244,6 +247,20 @@ static int rtw_ops_add_interface(struct ieee80211_hw *hw,
 		net_type = RTW_NET_NO_LINK;
 		bcn_ctrl = 0;
 		rtwdev->monitor_vif = vif;
+		rtwdev->hal.rcr |= BIT_AAP;
+		rtwdev->hal.rcr &= ~(BIT_CBSSID_BCN | BIT_CBSSID_DATA);
+		set_bit(RTW_FLAG_DIG_DISABLE, rtwdev->flags);
+		if (test_bit(RTW_FLAG_POWERON, rtwdev->flags)) {
+			rtw_write32(rtwdev, REG_RCR, rtwdev->hal.rcr);
+			rtw_write16(rtwdev, REG_RXFLTMAP1, 0xffff);
+			rtw_phy_dig_set_max_coverage(rtwdev);
+			if (rtwdev->chip->ops->cck_pd_set) {
+				rtwdev->dm_info.cck_pd_lv[RTW_CHANNEL_WIDTH_20][RF_PATH_A] =
+					CCK_PD_LV_MAX;
+				rtwdev->chip->ops->cck_pd_set(rtwdev,
+							      CCK_PD_LV0);
+			}
+		}
 		break;
 	case NL80211_IFTYPE_AP:
 	case NL80211_IFTYPE_MESH_POINT:
@@ -297,8 +314,21 @@ static void rtw_ops_remove_interface(struct ieee80211_hw *hw,
 
 	mutex_lock(&rtwdev->mutex);
 
-	if (rtwdev->monitor_vif == vif)
+	if (rtwdev->monitor_vif == vif) {
 		rtwdev->monitor_vif = NULL;
+		rtwdev->mon_chan = 0;
+		rtwdev->hal.rcr &= ~BIT_AAP;
+		if (!test_bit(RTW_FLAG_SCANNING, rtwdev->flags)) {
+			clear_bit(RTW_FLAG_DIG_DISABLE, rtwdev->flags);
+			if (test_bit(RTW_FLAG_POWERON, rtwdev->flags))
+				rtw_phy_dig_reset(rtwdev);
+		}
+		if (test_bit(RTW_FLAG_POWERON, rtwdev->flags)) {
+			rtw_write32(rtwdev, REG_RCR, rtwdev->hal.rcr);
+			rtw_write16(rtwdev, REG_RXFLTMAP1,
+				    rtwdev->hal.rxfltmap1);
+		}
+	}
 
 	rtw_leave_lps_deep(rtwdev);
 
@@ -384,7 +414,7 @@ static void rtw_ops_configure_filter(struct ieee80211_hw *hw,
 			rtwdev->hal.rcr |= BIT_CBSSID_BCN;
 	}
 
-	if (hw->conf.flags & IEEE80211_CONF_MONITOR) {
+	if (rtw_in_monitor_mode(rtwdev)) {
 		rtwdev->hal.rcr |= BIT_AAP;
 		rtwdev->hal.rcr &= ~(BIT_CBSSID_BCN | BIT_CBSSID_DATA);
 		if (test_bit(RTW_FLAG_POWERON, rtwdev->flags))

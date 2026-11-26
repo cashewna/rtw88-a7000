@@ -112,8 +112,8 @@ static const struct ieee80211_iface_limit rtw_iface_limits[] = {
 	{
 		.max = 1,
 		.types = BIT(NL80211_IFTYPE_AP) |
-                        BIT(NL80211_IFTYPE_P2P_CLIENT) |
-                        BIT(NL80211_IFTYPE_P2P_GO)
+			 BIT(NL80211_IFTYPE_P2P_CLIENT) |
+			 BIT(NL80211_IFTYPE_P2P_GO),
 	}
 };
 
@@ -2427,6 +2427,9 @@ int rtw_register_hw(struct rtw_dev *rtwdev, struct ieee80211_hw *hw)
 	ieee80211_hw_set(hw, HAS_RATE_CONTROL);
 	ieee80211_hw_set(hw, TX_AMSDU);
 	ieee80211_hw_set(hw, SINGLE_SCAN_ON_ALL_BANDS);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+	ieee80211_hw_set(hw, NO_VIRTUAL_MONITOR);
+#endif
 
 	hw->wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION) |
 				     BIT(NL80211_IFTYPE_AP) |
