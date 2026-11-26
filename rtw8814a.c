@@ -280,6 +280,8 @@ static void rtw8814a_config_cck_rx_antenna_init(struct rtw_dev *rtwdev)
 	rtw_write32_mask(rtwdev, REG_CCKTX, BIT_CMB_CCA_2R, 1);
 }
 
+static void rtw8814a_switch_band(struct rtw_dev *rtwdev, u8 new_band, u8 bw);
+
 static void rtw8814a_phy_set_param(struct rtw_dev *rtwdev)
 {
 	u32 crystal_cap, val32;
@@ -336,6 +338,13 @@ static void rtw8814a_phy_set_param(struct rtw_dev *rtwdev)
 	rtw8814a_pwrtrack_init(rtwdev);
 
 	rtw8814a_init_rfe_reg(rtwdev);
+
+	/* bb_tbl leaves REG_RFE_PINMUX_A..D at 5 GHz RFE0 defaults while
+	 * REG_CCK_CHECK is 0, causing rtw8814a_set_channel() to skip
+	 * rtw8814a_switch_band() on initial 2.4 GHz tunes. Align the RFE
+	 * and baseband state with 2.4 GHz immediately after power-on.
+	 */
+	rtw8814a_switch_band(rtwdev, RTW_BAND_2G, RTW_CHANNEL_WIDTH_20);
 
 	rtw_write8_clr(rtwdev, REG_QUEUE_CTRL, BIT(3));
 
