@@ -208,6 +208,7 @@ static int rtw_ops_add_interface(struct ieee80211_hw *hw,
 	struct rtw_vif *rtwvif = (struct rtw_vif *)vif->drv_priv;
 	enum rtw_net_type net_type;
 	u32 config = 0;
+	bool first_vif;
 	u8 port;
 	u8 bcn_ctrl = 0;
 
@@ -225,6 +226,8 @@ static int rtw_ops_add_interface(struct ieee80211_hw *hw,
 
 	mutex_lock(&rtwdev->mutex);
 
+	first_vif = bitmap_empty(rtwdev->hw_port, RTW_PORT_NUM);
+
 	rtwvif->mac_id = rtw_acquire_macid(rtwdev);
 	if (rtwvif->mac_id >= RTW_MAX_MAC_ID_NUM) {
 		mutex_unlock(&rtwdev->mutex);
@@ -241,6 +244,13 @@ static int rtw_ops_add_interface(struct ieee80211_hw *hw,
 	rtwvif->port = port;
 	rtwvif->conf = &rtw_vif_port[port];
 	rtw_leave_lps_deep(rtwdev);
+
+	if (first_vif) {
+		rtwdev->hal.rcr = RTW_RCR_DEFAULT;
+		rtwdev->mon_chan = 0;
+		if (!test_bit(RTW_FLAG_SCANNING, rtwdev->flags))
+			clear_bit(RTW_FLAG_DIG_DISABLE, rtwdev->flags);
+	}
 
 	switch (vif->type) {
 	case NL80211_IFTYPE_MONITOR:
@@ -285,6 +295,12 @@ static int rtw_ops_add_interface(struct ieee80211_hw *hw,
 		return -EINVAL;
 	}
 
+	if (first_vif && vif->type != NL80211_IFTYPE_MONITOR &&
+	    test_bit(RTW_FLAG_POWERON, rtwdev->flags)) {
+		rtw_write32(rtwdev, REG_RCR, rtwdev->hal.rcr);
+		rtw_write16(rtwdev, REG_RXFLTMAP1, rtwdev->hal.rxfltmap1);
+	}
+
 	ether_addr_copy(rtwvif->mac_addr, vif->addr);
 	config |= PORT_SET_MAC_ADDR;
 	rtwvif->net_type = net_type;
@@ -327,6 +343,7 @@ static void rtw_ops_remove_interface(struct ieee80211_hw *hw,
 			rtw_write32(rtwdev, REG_RCR, rtwdev->hal.rcr);
 			rtw_write16(rtwdev, REG_RXFLTMAP1,
 				    rtwdev->hal.rxfltmap1);
+			rtw_set_channel(rtwdev);
 		}
 	}
 

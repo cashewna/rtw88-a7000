@@ -13,6 +13,7 @@
 #include "reg.h"
 #include "ps.h"
 #include "regd.h"
+#include "hci.h"
 
 #ifdef CONFIG_RTW88_DEBUGFS
 
@@ -98,6 +99,7 @@ struct rtw_debugfs {
 	struct rtw_debugfs_priv force_lowest_basic_rate;
 	struct rtw_debugfs_priv dm_cap;
 	struct rtw_debugfs_priv monitor_channel;
+	struct rtw_debugfs_priv reset_rx;
 };
 
 static const char * const rtw_dm_cap_strs[] = {
@@ -1248,6 +1250,62 @@ static int rtw_debugfs_get_monitor_channel(struct seq_file *m, void *v)
 	return 0;
 }
 
+static ssize_t rtw_debugfs_set_reset_rx(struct file *filp,
+					const char __user *buffer,
+					size_t count, loff_t *loff)
+{
+	struct rtw_debugfs_priv *debugfs_priv = filp->private_data;
+	struct rtw_dev *rtwdev = debugfs_priv->rtwdev;
+	int ret;
+
+	mutex_lock(&rtwdev->mutex);
+	if (!test_bit(RTW_FLAG_RUNNING, rtwdev->flags)) {
+		mutex_unlock(&rtwdev->mutex);
+		return -ENETDOWN;
+	}
+	rtw_leave_lps_deep(rtwdev);
+	if (!test_bit(RTW_FLAG_POWERON, rtwdev->flags)) {
+		ret = rtw_leave_ips(rtwdev);
+		if (ret) {
+			mutex_unlock(&rtwdev->mutex);
+			return ret;
+		}
+	}
+	if (!test_bit(RTW_FLAG_POWERON, rtwdev->flags)) {
+		mutex_unlock(&rtwdev->mutex);
+		return -ENETDOWN;
+	}
+
+	if (rtw_in_monitor_mode(rtwdev)) {
+		rtwdev->hal.rcr |= BIT_AAP;
+		rtwdev->hal.rcr &= ~(BIT_CBSSID_BCN | BIT_CBSSID_DATA);
+		rtw_write32(rtwdev, REG_RCR, rtwdev->hal.rcr);
+		rtw_write16(rtwdev, REG_RXFLTMAP1, 0xffff);
+		rtw_phy_dig_set_max_coverage(rtwdev);
+		if (rtwdev->chip->ops->cck_pd_set) {
+			rtwdev->dm_info.cck_pd_lv[RTW_CHANNEL_WIDTH_20][RF_PATH_A] =
+				CCK_PD_LV_MAX;
+			rtwdev->chip->ops->cck_pd_set(rtwdev, CCK_PD_LV0);
+		}
+	} else {
+		rtwdev->hal.rcr &= ~BIT_AAP;
+		rtw_write32(rtwdev, REG_RCR, rtwdev->hal.rcr);
+		rtw_write16(rtwdev, REG_RXFLTMAP1, rtwdev->hal.rxfltmap1);
+		rtw_phy_dig_reset(rtwdev);
+	}
+
+	if (rtw_hci_type(rtwdev) == RTW_HCI_TYPE_USB)
+		rtw_hci_start(rtwdev);
+
+	rtw_set_channel(rtwdev);
+	rtw_info(rtwdev, "reset_rx: ch=%u bw=%u rcr=0x%08x\n",
+		 rtwdev->hal.current_channel, rtwdev->hal.current_band_width,
+		 rtwdev->hal.rcr);
+	mutex_unlock(&rtwdev->mutex);
+
+	return count;
+}
+
 static const struct rtw_debugfs rtw_debugfs_templ = {
 	.mac_0 = rtw_debug_priv_mac(0x0000),
 	.mac_1 = rtw_debug_priv_mac(0x0100),
@@ -1303,6 +1361,7 @@ static const struct rtw_debugfs rtw_debugfs_templ = {
 	.force_lowest_basic_rate = rtw_debug_priv_set_and_get(force_lowest_basic_rate),
 	.dm_cap = rtw_debug_priv_set_and_get(dm_cap),
 	.monitor_channel = rtw_debug_priv_set_and_get(monitor_channel),
+	.reset_rx = rtw_debug_priv_set(reset_rx),
 };
 
 #define rtw_debugfs_add_core(name, mode, fopname, parent)		\
@@ -1344,6 +1403,7 @@ void rtw_debugfs_add_basic(struct rtw_dev *rtwdev, struct dentry *debugfs_topdir
 	rtw_debugfs_add_rw(force_lowest_basic_rate);
 	rtw_debugfs_add_rw(dm_cap);
 	rtw_debugfs_add_rw(monitor_channel);
+	rtw_debugfs_add_w(reset_rx);
 }
 
 static

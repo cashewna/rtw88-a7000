@@ -796,6 +796,7 @@ static void rtw_usb_rx_resubmit(struct rtw_usb *rtwusb,
 	error = usb_submit_urb(rxcb->rx_urb, gfp);
 	if (error) {
 		skb_queue_tail(&rtwusb->rx_free_queue, rxcb->rx_skb);
+		rxcb->rx_skb = NULL;
 
 		if (error != -ENODEV)
 			rtw_err(rtwdev, "Err sending rx data urb %d\n",
@@ -851,22 +852,26 @@ static void rtw_usb_read_port_complete(struct urb *urb)
 		rtw_usb_rx_resubmit(rtwusb, rxcb, GFP_ATOMIC);
 	} else {
 		skb_queue_tail(&rtwusb->rx_free_queue, skb);
+		rxcb->rx_skb = NULL;
 
 		switch (urb->status) {
 		case -EINVAL:
-		case -EPIPE:
 		case -ENODEV:
 		case -ESHUTDOWN:
 		case -ENOENT:
+			break;
+		default:
+			rtw_err(rtwdev, "status %d\n", urb->status);
+			fallthrough;
+		case -EPIPE:
 		case -EPROTO:
 		case -EILSEQ:
 		case -ETIME:
 		case -ECOMM:
 		case -EOVERFLOW:
 		case -EINPROGRESS:
-			break;
-		default:
-			rtw_err(rtwdev, "status %d\n", urb->status);
+			if (READ_ONCE(rtwusb->rx_ready))
+				queue_work(rtwusb->rxwq, &rtwusb->rx_urb_work);
 			break;
 		}
 	}
@@ -922,6 +927,11 @@ static int rtw_usb_setup(struct rtw_dev *rtwdev)
 
 static int rtw_usb_start(struct rtw_dev *rtwdev)
 {
+	struct rtw_usb *rtwusb = rtw_get_usb_priv(rtwdev);
+
+	if (READ_ONCE(rtwusb->rx_ready))
+		queue_work(rtwusb->rxwq, &rtwusb->rx_urb_work);
+
 	return 0;
 }
 
@@ -1099,10 +1109,13 @@ static void rtw_usb_setup_rx(struct rtw_dev *rtwdev)
 	struct rtw_usb *rtwusb = rtw_get_usb_priv(rtwdev);
 	int i;
 
+	WRITE_ONCE(rtwusb->rx_ready, true);
+
 	for (i = 0; i < RTW_USB_RXCB_NUM; i++) {
 		struct rx_usb_ctrl_block *rxcb = &rtwusb->rx_cb[i];
 
-		rtw_usb_rx_resubmit(rtwusb, rxcb, GFP_KERNEL);
+		if (!rxcb->rx_skb)
+			rtw_usb_rx_resubmit(rtwusb, rxcb, GFP_KERNEL);
 	}
 }
 
@@ -1481,10 +1494,12 @@ void rtw_usb_disconnect(struct usb_interface *intf)
 	rtwdev = hw->priv;
 	rtwusb = rtw_get_usb_priv(rtwdev);
 
+	WRITE_ONCE(rtwusb->rx_ready, false);
 	rtw_usb_cancel_rx_bufs(rtwusb);
 
 	rtw_unregister_hw(rtwdev, hw);
 	rtw_usb_deinit_tx(rtwdev);
+	cancel_work_sync(&rtwusb->rx_urb_work);
 	rtw_usb_deinit_rx(rtwdev);
 
 	if (rtwusb->udev->state != USB_STATE_NOTATTACHED)
