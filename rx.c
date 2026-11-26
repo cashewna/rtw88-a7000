@@ -211,7 +211,10 @@ static void rtw_rx_fill_rx_status(struct rtw_dev *rtwdev,
 	u8 path;
 
 	memset(rx_status, 0, sizeof(*rx_status));
-	if (hw->conf.chandef.chan) {
+	if (rtwdev->mon_chan) {
+		rtw_set_rx_freq_band(pkt_stat, rtwdev->hal.current_channel);
+		rtw_set_rx_freq_by_pktstat(pkt_stat, rx_status);
+	} else if (hw->conf.chandef.chan) {
 		rx_status->freq = hw->conf.chandef.chan->center_freq;
 		rx_status->band = hw->conf.chandef.chan->band;
 	}
